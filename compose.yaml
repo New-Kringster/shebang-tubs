@@ -1,0 +1,18 @@
+# Install: TUBD_DIR=$HOME/tubs docker compose up -d
+# tubd gets the Docker socket, and TUBD_DIR mounted at the same path inside
+# and outside its container, so tub folder mounts resolve on the host.
+name: tubd
+services:
+  tubd:
+    build: tubd
+    image: shebang-tubs/tubd:0.1.0
+    restart: unless-stopped
+    environment:
+      TUBD_DIR: ${TUBD_DIR:?set TUBD_DIR to an absolute path, for example TUBD_DIR=$HOME/tubs}
+      TUBD_HOST_ADDRESS: ${TUBD_HOST_ADDRESS:-localhost}
+      TUBD_PORT_RANGE: ${TUBD_PORT_RANGE:-20000-20999}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${TUBD_DIR}:${TUBD_DIR}
+    ports:
+      - "127.0.0.1:${TUBD_PORT:-7070}:7070"

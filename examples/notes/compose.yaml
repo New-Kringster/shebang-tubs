@@ -1,0 +1,129 @@
+# notes: example "standard" tub. Plain Docker Compose; runs anywhere with
+# `docker compose up -d`. All state lives under ./data, secrets in ./.env.
+name: notes
+
+x-pg-image: &pg supabase/postgres:17.6.1.136
+
+services:
+  db:
+    image: *pg
+    restart: unless-stopped
+    command: [postgres, -c, config_file=/etc/postgresql/postgresql.conf, -c, log_min_messages=fatal]
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run with the tub's .env}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      PGDATABASE: postgres
+      JWT_SECRET: ${JWT_SECRET:?run with the tub's .env}
+      JWT_EXP: 3600
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+      # pgsodium/vault root key; must travel with the data. Mount only the
+      # file: the image keeps config in the same folder.
+      - ./data/pgsodium_root.key:/etc/postgresql-custom/pgsodium_root.key
+      - ./db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -h, localhost]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  auth:
+    image: supabase/gotrue:v2.197.0
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${TUB_PUBLIC_URL:-http://localhost:8080}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_SITE_URL: ${TUB_PUBLIC_URL:-http://localhost:8080}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://localhost:9999/health]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: loads ./restore after an import, or the starting schema on a
+  # fresh tub. Runs after auth has created its own tables. Never runs twice.
+  restore:
+    image: *pg
+    restart: "no"
+    depends_on:
+      auth: { condition: service_healthy }
+    entrypoint: [sh, /tub/restore.sh]
+    environment:
+      PGHOST: db
+      PGUSER: supabase_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+    volumes:
+      - ./db/restore.sh:/tub/restore.sh:ro
+      - ./db/schema.sql:/tub/schema.sql:ro
+      - ./restore:/restore:ro
+
+  # Writes the dumps that `restore` loads. Run only on export:
+  #   docker compose --profile tub-export run --rm export
+  export:
+    image: *pg
+    profiles: [tub-export]
+    restart: "no"
+    depends_on:
+      db: { condition: service_healthy }
+    entrypoint: [sh, -c]
+    command:
+      - >-
+        set -e;
+        pg_dump -Fc --data-only -n auth --exclude-table-data=auth.schema_migrations -f /restore/auth-data.dump;
+        pg_dump -Fc -n public -f /restore/app.dump;
+        echo export: done
+    environment:
+      PGHOST: db
+      PGUSER: supabase_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+    volumes:
+      - ./restore:/restore
+
+  rest:
+    image: postgrest/postgrest:v14.12
+    restart: unless-stopped
+    depends_on:
+      restore: { condition: service_completed_successfully }
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+
+  app:
+    build: services/app
+    image: notes-app:1
+    restart: unless-stopped
+    depends_on:
+      restore: { condition: service_completed_successfully }
+      rest: { condition: service_started }
+    environment:
+      PORT: 3000
+      AUTH_URL: http://auth:9999
+      REST_URL: http://rest:3000
+      ANON_KEY: ${ANON_KEY:?run with the tub's .env}
+      FILES_DIR: /data/files
+      TUB_PUBLIC_URL: ${TUB_PUBLIC_URL:-http://localhost:8080}
+    ports:
+      - "${APP_PORT:-8080}:3000"
+    volumes:
+      - ./data/files:/data/files

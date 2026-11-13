@@ -1,0 +1,13 @@
+# Shebang-only details. compose.yaml runs without this file.
+name: notes
+template: standard
+public:
+  service: app
+  port: 3000
+# Creates .env and the vault key when the tub arrives without them.
+init: [node, init.mjs]
+export:
+  # Stopped while the dumps and files are copied, so they match.
+  quiesce: [app, rest, auth]
+  # Live state that the zip carries in another form (the dumps in ./restore).
+  exclude: [data/db]
