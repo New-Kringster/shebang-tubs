@@ -44,11 +44,11 @@ nothing is removed early.
 | # | Question | Decision |
 |---|---|---|
 | Runtime | Compose, Kubernetes or microVMs? | **Docker Compose**, one compose project per tub. Kubernetes stores data in cluster volumes, which breaks "one folder"; microVMs only pay off for untrusted code. |
-| Q1 | Who writes tub code? | Braven and his agents only, for now. Ordinary `runc` containers. If other users arrive, switch the tub runtime to gVisor or Kata (`/dev/kvm` exists on braven-agents) without changing the tub format. |
+| Q1 | Who writes tub code? | Braven and their agents only, for now. Ordinary `runc` containers. If other users arrive, switch the tub runtime to gVisor or Kata (needs `/dev/kvm` for Kata) without changing the tub format. |
 | Q2 | Where do a tub's users live? | **Inside the tub**: each tub that needs users runs its own auth (for example GoTrue). Shebang auth (sherlock) is an optional identity provider ("Sign in with shebang") a tub can trust; it never manages the tub's users. Opt-in per tub (revised later the same day). |
 | Q3 | Which parts of Supabase does a tub get? | Whatever the building agent judges best. No fixed set. |
 | Q4 | What happens to v1 apps? | Leave them running unchanged until tubs work well. Then remove all of v1 except auth, which moves out on its own and stays hosted by Braven (revised later the same day). |
-| Q5 | Where does the first instance run? | braven-agents (this VM). |
+| Q5 | Where does the first instance run? | Braven's agents VM. |
 | Q6 | Do secrets travel? | Yes. One zip holds everything, including secrets and a README explaining how to run the tub without shebang. No lock-in. |
 | Q7 | Is the zip encrypted? | Only if the user turns it on (`--encrypt`): AES-256 zip with a passphrase; `README.md` stays readable. Opens with 7-Zip, Keka or `7z x`. Default is a plain zip. |
 | Q8 | Which images are in the zip? | Default: the images built for the tub's own services; public images are pinned by digest and pulled on first start. `--offline`: every image is bundled. |
@@ -170,14 +170,14 @@ for the instance, and giving a tub a domain adds one tunnel route and one
 CNAME to the tunnel, using the owner's own Cloudflare token and zone. The
 rest of this section is Braven's own instance, which can use either path.
 
-Ingress today: Cloudflare proxied record → home IP → UDM forwards 443 → Nginx
-Proxy Manager on newmain → a port on braven-agents. For tubs:
+Ingress there already runs through a proxied Cloudflare record, a port
+forward and an existing reverse proxy (Nginx Proxy Manager). For tubs:
 
 1. **Once:** one NPM proxy host `*.shebang.pro` → the tub router (Caddy or
-   Traefik, decided at build time) on braven-agents. NPM matches exact
+   Traefik, decided at build time) on the tubd host. NPM matches exact
    hosts before wildcards, so existing hosts are unaffected. One anchor
-   record (for example `edge.shebang.pro`, A → home IP). Both done by the
-   infra-changes instance with Braven's approval.
+   record (for example `edge.shebang.pro`, A → the public IP). Both done
+   once, by hand, with Braven's approval.
 2. **Per tub, on request:** a proxied CNAME `<tub>.shebang.pro` → the
    anchor (`tub_set_domain` in MCP, or the dash). An IP change then means
    editing one record.
@@ -185,7 +185,7 @@ Proxy Manager on newmain → a port on braven-agents. For tubs:
    updates the sherlock redirect.
 
 Without a record, a tub is reachable on the LAN at
-`192.168.1.83:<port tubd assigns>`.
+`<host address>:<port tubd assigns>`.
 
 **DNS guardrails** (the conditions of the Q13 grant):
 
@@ -268,8 +268,7 @@ of public images, and nightly export backups.
 
 ## Measured context (2026-11-13)
 
-- v1's Supabase stack runs on braven-agents (Execution.md Stage 1), not
-  newmain as Decision 1 above says. Its 11 containers idle at ~630 MB; the
+- v1's self-hosted Supabase stack (11 containers) idles at ~630 MB; the
   per-tub core (Postgres, PostgREST, GoTrue, Storage, Realtime) ~320 MB;
   Postgres alone ~67 MB. `docker stats`, idle.
 - Image sizes: `supabase/postgres` 1.24 GB, `storage-api` 862 MB, the dash
@@ -311,7 +310,7 @@ What it found:
 - **Encryption:** 7-Zip AES-256 with the README stored plain; 15 of 16
   entries encrypted; a wrong passphrase is refused; `.env` keeps mode 600.
   The passphrase goes to 7z on stdin, never argv. 7-Zip 24.09 was installed
-  on braven-agents for this (`apt install 7zip`).
+  on the dev VM for this (`apt install 7zip`).
 - **`COMPOSE_PROJECT_NAME`** overrides the file's `name:`, which is how two
   copies of one tub run side by side on one host.
 
